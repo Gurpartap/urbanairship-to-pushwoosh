@@ -156,7 +156,7 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 		dir := dumpDir + "/urbanairship/" + strconv.Itoa(len(allDeviceTokens))
 		os.MkdirAll(dir, 0744)
 		txt, _ := json.MarshalIndent(deviceTokenResp, "", "\t")
-		ioutil.WriteFile(dir+"/device_tokens.txt", txt, 0644)
+		ioutil.WriteFile(dir+"/device_tokens.json", txt, 0644)
 
 		for _, deviceToken := range deviceTokens {
 			pending <- deviceToken
@@ -173,7 +173,7 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 	}
 
 	txt, _ := json.MarshalIndent(allDeviceTokens, "", "\t")
-	ioutil.WriteFile(dumpDir+"/urbanairship.txt", txt, 0644)
+	ioutil.WriteFile(dumpDir+"/urbanairship.json", txt, 0644)
 
 	pending <- UADeviceToken{
 		Active:      false,
@@ -290,7 +290,7 @@ func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan
 			case t := <-updates:
 				tokenStatus[t.Status] = append(tokenStatus[t.Status], t.DeviceToken)
 
-				file, _ := os.OpenFile(dumpDir+"/pushwoosh.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+				file, _ := os.OpenFile(dumpDir+"/pushwoosh.json", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 				defer file.Close()
 				jsonStr, _ := json.MarshalIndent(t, "", "\t")
 				file.WriteString(string(jsonStr) + ", ")

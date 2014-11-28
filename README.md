@@ -17,6 +17,12 @@ $ go run main.go
 
 A JSON formatted dump of exported tokens will be available in the `./dump` directory.
 
+```bash
+$ ls ./dump
+urbanairship.json
+pushwoosh.json
+```
+
 #### Clean up dump
 
 ```bash
