@@ -10,7 +10,7 @@ Enter your API keys and change some defaults in main.go file and run:
 $ make
 ```
 
-A dump of exported tokens will be available on 
+A JSON formatted dump of exported tokens will be available in the `./dump` directory.
 
 #### Clean up dump
 
