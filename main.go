@@ -255,7 +255,7 @@ func PostDeviceTokensToPushWoosh(pending chan UADeviceToken, done chan bool, sta
 	done <- true
 }
 
-func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan<- State {
+func StateMonitor(updateInterval time.Duration) chan<- State {
 	updates := make(chan State)
 	tokenStatus := make(map[string][]string)
 	ticker := time.NewTicker(updateInterval)
@@ -292,7 +292,7 @@ func main() {
 	dumpDir = "./dump/" + strconv.FormatInt(time.Now().Unix(), 10)
 
 	pending := make(chan UADeviceToken)
-	status := StateMonitor(1*time.Millisecond, pending)
+	status := StateMonitor(1 * time.Millisecond)
 	done := make(chan bool)
 
 	go GetDeviceTokensFromUrbanAirship(pending, done)
