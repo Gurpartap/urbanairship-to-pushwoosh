@@ -1,4 +1,4 @@
-## export UrbanAirship.com/devices | import PushWoosh.com/devices
+## export UrbanAirship.com | import PushWoosh.com
 
 Go based script for exporting device tokens from UrbanAirship and importing into PushWoosh push notifications service. Sadly PushWoosh doesn't have a bulk import API, so I made this script. Uses goroutines and channels for parallel export/import.
 
