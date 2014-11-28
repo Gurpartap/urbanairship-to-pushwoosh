@@ -2,6 +2,10 @@
 
 Go based script for exporting device tokens from UrbanAirship and importing into PushWoosh push notifications service. Sadly PushWoosh doesn't have a bulk import API, so I made this script. Uses goroutines and channels for parallel export/import.
 
+#### Note
+
+This script is not very well tested. Tread carefully. Also, polling an API endpoint for every token is the worst way for bulk importing large number of device tokens. Ask out the PushWoosh guys to help with the bulk import if you have hundreds of thousands of tokens.
+
 #### Usage
 
 Enter your API keys and change some defaults in main.go file and run:
