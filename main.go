@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -106,9 +107,13 @@ type State struct {
 	DeviceToken string `json:"device_token"`
 }
 
+var activeTokensCount float64 = 0
+var tokensCount float64 = 0
+var downloadedTokensCount float64 = 0
+
 func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 	if debug {
-		println("Entered GetDeviceTokensFromUrbanAirship")
+		fmt.Println("Entered GetDeviceTokensFromUrbanAirship")
 	}
 
 	GetDeviceTokensFromUrbanAirshipWithURL := func(url string, deviceTokenResp *UADeviceTokensResponse) {
@@ -140,6 +145,13 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 		var deviceTokenResp UADeviceTokensResponse
 		GetDeviceTokensFromUrbanAirshipWithURL(nextPage, &deviceTokenResp)
 
+		if activeTokensCount == 0 {
+			activeTokensCount = deviceTokenResp.ActiveDeviceTokensCount
+		}
+		if tokensCount == 0 {
+			tokensCount = deviceTokenResp.DeviceTokensCount
+		}
+
 		deviceTokens = append(deviceTokens, deviceTokenResp.DeviceTokens...)
 		dir := dumpDir + "/urbanairship/" + strconv.Itoa(len(allDeviceTokens))
 		os.MkdirAll(dir, 0744)
@@ -151,12 +163,13 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 		}
 
 		if len(deviceTokenResp.NextPage) > 0 {
-			nextPage = "" //deviceTokenResp.NextPage
+			nextPage = deviceTokenResp.NextPage
 		} else {
 			nextPage = ""
 		}
 
 		allDeviceTokens = append(allDeviceTokens, deviceTokens...)
+		downloadedTokensCount = float64(len(allDeviceTokens))
 	}
 
 	txt, _ := json.MarshalIndent(allDeviceTokens, "", "\t")
@@ -170,21 +183,21 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 	}
 
 	if debug {
-		println("Exiting GetDeviceTokensFromUrbanAirship")
+		fmt.Println("Exiting GetDeviceTokensFromUrbanAirship")
 	}
 }
 
 func PostDeviceTokensToPushWoosh(pending <-chan UADeviceToken, status chan<- State, done chan struct{}) {
 	if debug {
-		println("Entered PostDeviceTokensToPushWoosh")
+		fmt.Println("Entered PostDeviceTokensToPushWoosh")
 	}
 
 	for {
 		select {
 		case deviceToken, _ := <-pending:
 			if debug {
-				println("Attempting to register device...")
-				println("Device Token: " + deviceToken.DeviceToken)
+				fmt.Println("Attempting to register device...")
+				fmt.Println("Device Token: " + deviceToken.DeviceToken)
 			}
 
 			if deviceToken.DeviceToken == "" && deviceToken.Active == false && deviceToken.Created == "" {
@@ -222,16 +235,16 @@ func PostDeviceTokensToPushWoosh(pending <-chan UADeviceToken, status chan<- Sta
 				PostDeviceTokenToPushWoosh(registerDevice, &deviceRegisterResp)
 				if deviceRegisterResp.StatusCode != 200 || deviceRegisterResp.StatusMessage != "OK" {
 					r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
-					println("\nFailed to register device with token:")
-					println("\n\t" + registerDevice.Request.PushToken)
-					println("\nResponse from PushWoosh:\n")
+					fmt.Println("\nFailed to register device with token:")
+					fmt.Println("\n\t" + registerDevice.Request.PushToken)
+					fmt.Println("\nResponse from PushWoosh:\n")
 					os.Stdout.Write(r)
 					close(done)
 				} else {
 					if debug {
 						r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
 						os.Stdout.Write(r)
-						println()
+						fmt.Println()
 					}
 				}
 				status <- State{"SENT", deviceToken.DeviceToken}
@@ -240,13 +253,13 @@ func PostDeviceTokensToPushWoosh(pending <-chan UADeviceToken, status chan<- Sta
 			}
 
 			if debug {
-				println("Device registration complete.")
+				fmt.Println("Device registration complete.")
 			}
 		}
 	}
 
 	if debug {
-		println("Exiting PostDeviceTokensToPushWoosh")
+		fmt.Println("Exiting PostDeviceTokensToPushWoosh")
 	}
 }
 
@@ -258,17 +271,29 @@ func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan
 		for {
 			select {
 			case <-ticker.C:
-				println("Current state:")
-				for k, v := range tokenStatus {
-					println(k, ":", len(v))
+				fmt.Print("\r")
+				var downloadProgress float64 = 0
+				if downloadedTokensCount > 0 {
+					downloadProgress = downloadedTokensCount / tokensCount * 100
 				}
+				fmt.Printf("%.1f%% imported (%g of %g total tokens)", downloadProgress, downloadedTokensCount, tokensCount)
+				var uploadProgress float64 = 0
+				if len(tokenStatus["SENT"]) > 0 {
+					uploadProgress = float64(len(tokenStatus["SENT"])) / activeTokensCount * 100
+				}
+				fmt.Print(" --- ")
+				fmt.Printf("%.1f%% exported (%d of %g active tokens)", uploadProgress, len(tokenStatus["SENT"]), activeTokensCount)
+				// fmt.Printf("(%d inactive))", len(tokenStatus["INACTIVE"]))
+				// for k, v := range tokenStatus {
+				// 	fmt.Print(k, ":", len(v), "; ")
+				// }
 			case t := <-updates:
 				tokenStatus[t.Status] = append(tokenStatus[t.Status], t.DeviceToken)
 
 				file, _ := os.OpenFile(dumpDir+"/pushwoosh.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 				defer file.Close()
 				jsonStr, _ := json.MarshalIndent(t, "", "\t")
-				file.WriteString(string(jsonStr) + ",\n")
+				file.WriteString(string(jsonStr) + ", ")
 			}
 		}
 	}()
@@ -277,7 +302,7 @@ func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan
 
 func main() {
 	if debug {
-		println("Entered main")
+		fmt.Println("Entered main")
 	}
 
 	dumpDir = "./dump/" + strconv.FormatInt(time.Now().Unix(), 10)
@@ -291,9 +316,9 @@ func main() {
 
 	<-done
 
-	println("All done. Bye.")
+	fmt.Println("All done. Bye.")
 
 	if debug {
-		println("Exiting main")
+		fmt.Println("Exiting main")
 	}
 }

@@ -11,7 +11,8 @@ This script is not very well tested. Tread carefully. Also, polling an API endpo
 Enter your API keys and change some defaults in main.go file and run:
 
 ```bash
-$ make
+$ go run main.go
+18.9% imported (3213 of 16985 total tokens) --- 36.4% exported (2910 of 7993 active tokens)
 ```
 
 A JSON formatted dump of exported tokens will be available in the `./dump` directory.
