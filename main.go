@@ -19,7 +19,7 @@ type UrbanAirship struct {
 	MasterSecret string
 
 	TokensLimitPerRequest int    // Optional. A maximum value of only 10000 is accepted.
-	StartingTokenId       string // Optional. Token Id is not the same as device_token.
+	StartingTokenId       string // Optional. UA Token Id is not the same as device_token.
 }
 
 type PushWoosh struct {
@@ -111,7 +111,7 @@ var activeTokensCount float64 = 0
 var tokensCount float64 = 0
 var downloadedTokensCount float64 = 0
 
-func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
+func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken, done chan bool) {
 	GetDeviceTokensFromUrbanAirshipWithURL := func(url string, deviceTokenResp *UADeviceTokensResponse) {
 		req, _ := http.NewRequest("GET", url, nil)
 		req.SetBasicAuth(config.UrbanAirship.AppKey, config.UrbanAirship.MasterSecret)
@@ -154,10 +154,6 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 		txt, _ := json.MarshalIndent(deviceTokenResp, "", "\t")
 		ioutil.WriteFile(dir+"/device_tokens.json", txt, 0644)
 
-		for _, deviceToken := range deviceTokens {
-			pending <- deviceToken
-		}
-
 		if len(deviceTokenResp.NextPage) > 0 {
 			nextPage = deviceTokenResp.NextPage
 		} else {
@@ -166,84 +162,97 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 
 		allDeviceTokens = append(allDeviceTokens, deviceTokens...)
 		downloadedTokensCount = float64(len(allDeviceTokens))
+
+		for _, deviceToken := range deviceTokens {
+			pending <- deviceToken
+		}
 	}
 
 	txt, _ := json.MarshalIndent(allDeviceTokens, "", "\t")
 	ioutil.WriteFile(dumpDir+"/urbanairship.json", txt, 0644)
 
-	pending <- UADeviceToken{
-		Active:      false,
-		Alias:       nil,
-		Created:     "",
-		DeviceToken: "",
-	}
+	pending <- UADeviceToken{}
+	done <- true
 }
 
-func PostDeviceTokensToPushWoosh(pending <-chan UADeviceToken, status chan<- State, done chan struct{}) {
-	for {
-		select {
-		case deviceToken, _ := <-pending:
-			if debug {
-				fmt.Println("Attempting to register device with token: " + deviceToken.DeviceToken)
-			}
+func PostDeviceTokensToPushWoosh(pending chan UADeviceToken, done chan bool, status chan<- State) {
+	for deviceToken := range pending {
+		if len(deviceToken.DeviceToken) == 0 {
+			close(pending)
+			break
+		}
 
-			if deviceToken.DeviceToken == "" && deviceToken.Active == false && deviceToken.Created == "" {
-				close(done)
-			}
+		if debug {
+			fmt.Println("Attempting to register device with token: " + deviceToken.DeviceToken)
+		}
 
-			PostDeviceTokenToPushWoosh := func(registerDevice PWRegisterDevice, deviceRegisterResp *PWDeviceRegisterResponse) {
-				jsonBody, _ := json.Marshal(registerDevice)
+		PostDeviceTokenToPushWoosh := func(registerDevice PWRegisterDevice, deviceRegisterResp *PWDeviceRegisterResponse) {
+			jsonBody, _ := json.Marshal(registerDevice)
+
+			maxRetries := 10
+			for i := 0; i < maxRetries; i++ {
 				body := strings.NewReader(string(jsonBody))
 				req, _ := http.NewRequest("POST", "https://cp.pushwoosh.com/json/1.3/registerDevice", body)
 				req.Header.Add("Content-type", "application/json")
 				req.Header.Add("Accept", "application/json")
 
 				client := &http.Client{}
-				resp, _ := client.Do(req)
-				respBody, _ := ioutil.ReadAll(resp.Body)
 
-				json.Unmarshal(respBody, &deviceRegisterResp)
+				resp, err := client.Do(req)
+				if err != nil {
+					fmt.Println("\nHTTP error:", err)
+				} else if resp != nil && resp.StatusCode == 200 {
+					defer resp.Body.Close()
+					respBody, _ := ioutil.ReadAll(resp.Body)
+					json.Unmarshal(respBody, &deviceRegisterResp)
+
+					break
+				}
+				fmt.Println("Retrying HTTP request...")
+				time.Sleep(10 * time.Second)
 			}
 
-			if deviceToken.Active {
-				registerDevice := PWRegisterDevice{
-					Request: PWRegisterDeviceRequest{
-						Auth:        config.PushWoosh.ApiKey,
-						Application: config.PushWoosh.AppCode,
-						DeviceType:  config.PushWoosh.DefaultDeviceType,
-						Language:    config.PushWoosh.DefaultLanguage,
-						Timezone:    config.PushWoosh.DefaultTimezone,
-						Hwid:        deviceToken.DeviceToken, // UrbanAirship does not provide UDID. Use the token instead.
-						PushToken:   deviceToken.DeviceToken,
-					},
-				}
+		}
 
-				var deviceRegisterResp PWDeviceRegisterResponse
-				PostDeviceTokenToPushWoosh(registerDevice, &deviceRegisterResp)
-				if deviceRegisterResp.StatusCode != 200 || deviceRegisterResp.StatusMessage != "OK" {
-					r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
-					fmt.Println("\nFailed to register device with token:")
-					fmt.Println("\n\t" + registerDevice.Request.PushToken)
-					fmt.Println("\nResponse from PushWoosh:\n")
-					os.Stdout.Write(r)
-					close(done)
-				} else {
-					if debug {
-						r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
-						os.Stdout.Write(r)
-						fmt.Println()
-					}
-				}
-				status <- State{"SENT", deviceToken.DeviceToken}
+		if deviceToken.Active {
+			registerDevice := PWRegisterDevice{
+				Request: PWRegisterDeviceRequest{
+					Auth:        config.PushWoosh.ApiKey,
+					Application: config.PushWoosh.AppCode,
+					DeviceType:  config.PushWoosh.DefaultDeviceType,
+					Language:    config.PushWoosh.DefaultLanguage,
+					Timezone:    config.PushWoosh.DefaultTimezone,
+					Hwid:        deviceToken.DeviceToken, // UrbanAirship does not provide UDID. Use the token instead.
+					PushToken:   deviceToken.DeviceToken,
+				},
+			}
+
+			var deviceRegisterResp PWDeviceRegisterResponse
+			PostDeviceTokenToPushWoosh(registerDevice, &deviceRegisterResp)
+			if deviceRegisterResp.StatusCode != 200 || deviceRegisterResp.StatusMessage != "OK" {
+				r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
+				fmt.Println("\nFailed to register device with token:")
+				fmt.Println("\n\t" + registerDevice.Request.PushToken)
+				fmt.Println("\nResponse from PushWoosh:\n")
+				os.Stdout.Write(r)
+				close(done)
 			} else {
-				status <- State{"INACTIVE", deviceToken.DeviceToken}
+				if debug {
+					r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
+					os.Stdout.Write(r)
+					fmt.Println()
+				}
 			}
+			status <- State{"SENT", deviceToken.DeviceToken}
+		} else {
+			status <- State{"INACTIVE", deviceToken.DeviceToken}
+		}
 
-			if debug {
-				fmt.Println("Device registration complete.")
-			}
+		if debug {
+			fmt.Println("Device registration complete.")
 		}
 	}
+	done <- true
 }
 
 func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan<- State {
@@ -265,11 +274,7 @@ func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan
 					uploadProgress = float64(len(tokenStatus["SENT"])) / activeTokensCount * 100
 				}
 				fmt.Print(" --- ")
-				fmt.Printf("%.1f%% exported (%d of %g active tokens)", uploadProgress, len(tokenStatus["SENT"]), activeTokensCount)
-				// fmt.Printf("(%d inactive))", len(tokenStatus["INACTIVE"]))
-				// for k, v := range tokenStatus {
-				// 	fmt.Print(k, ":", len(v), "; ")
-				// }
+				fmt.Printf("%.1f%% exported (%d of %g active tokens) ", uploadProgress, len(tokenStatus["SENT"]), activeTokensCount)
 			case t := <-updates:
 				tokenStatus[t.Status] = append(tokenStatus[t.Status], t.DeviceToken)
 
@@ -287,12 +292,19 @@ func main() {
 	dumpDir = "./dump/" + strconv.FormatInt(time.Now().Unix(), 10)
 
 	pending := make(chan UADeviceToken)
-	status := StateMonitor(5*time.Second, pending)
-	done := make(chan struct{})
+	status := StateMonitor(1*time.Millisecond, pending)
+	done := make(chan bool)
 
-	go GetDeviceTokensFromUrbanAirship(pending)
-	go PostDeviceTokensToPushWoosh(pending, status, done)
+	go GetDeviceTokensFromUrbanAirship(pending, done)
 
+	go PostDeviceTokensToPushWoosh(pending, done, status)
+	go PostDeviceTokensToPushWoosh(pending, done, status)
+	go PostDeviceTokensToPushWoosh(pending, done, status)
+
+	<-done
+
+	<-done
+	<-done
 	<-done
 
 	fmt.Println("All done. Bye.")
