@@ -101,9 +101,14 @@ type PWDeviceRegisterResponse struct {
 	Response      interface{} `json:"response",omitempty`
 }
 
-func GetDeviceTokensFromUrbanAirship(pending chan<- *UADeviceToken) {
+type State struct {
+	Status      string `json:"status"`
+	DeviceToken string `json:"device_token"`
+}
+
+func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 	if debug {
-		println("Entered GetDeviceTokensFromUrbanAirship(tokenChannel chan UADeviceToken)")
+		println("Entered GetDeviceTokensFromUrbanAirship")
 	}
 
 	GetDeviceTokensFromUrbanAirshipWithURL := func(url string, deviceTokenResp *UADeviceTokensResponse) {
@@ -117,10 +122,6 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- *UADeviceToken) {
 		respBody, _ := ioutil.ReadAll(resp.Body)
 
 		json.Unmarshal(respBody, &deviceTokenResp)
-
-		if debug {
-			println("Exiting GetDeviceTokensFromUrbanAirshipWithURL(url string, deviceTokenResp *UADeviceTokensResponse)")
-		}
 	}
 
 	nextPage := "https://go.urbanairship.com/api/device_tokens/?"
@@ -132,128 +133,124 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- *UADeviceToken) {
 		nextPage += "&start=" + config.UrbanAirship.StartingTokenId
 	}
 
-	var deviceTokens = []UADeviceToken{}
-
+	var allDeviceTokens = []UADeviceToken{}
 	for len(nextPage) > 0 {
+		var deviceTokens = []UADeviceToken{}
+
 		var deviceTokenResp UADeviceTokensResponse
 		GetDeviceTokensFromUrbanAirshipWithURL(nextPage, &deviceTokenResp)
 
 		deviceTokens = append(deviceTokens, deviceTokenResp.DeviceTokens...)
-		dir := dumpDir + "/urbanairship/" + strconv.Itoa(len(deviceTokens))
+		dir := dumpDir + "/urbanairship/" + strconv.Itoa(len(allDeviceTokens))
 		os.MkdirAll(dir, 0744)
 		txt, _ := json.MarshalIndent(deviceTokenResp, "", "\t")
 		ioutil.WriteFile(dir+"/device_tokens.txt", txt, 0644)
 
 		for _, deviceToken := range deviceTokens {
-			go func() { pending <- &deviceToken }()
+			pending <- deviceToken
 		}
 
 		if len(deviceTokenResp.NextPage) > 0 {
-			nextPage = deviceTokenResp.NextPage
+			nextPage = "" //deviceTokenResp.NextPage
 		} else {
 			nextPage = ""
 		}
+
+		allDeviceTokens = append(allDeviceTokens, deviceTokens...)
 	}
 
-	txt, _ := json.MarshalIndent(deviceTokens, "", "\t")
+	txt, _ := json.MarshalIndent(allDeviceTokens, "", "\t")
 	ioutil.WriteFile(dumpDir+"/urbanairship.txt", txt, 0644)
 
-	go func() {
-		pending <- &UADeviceToken{
-			Active:      false,
-			Alias:       nil,
-			Created:     "",
-			DeviceToken: "",
-		}
-	}()
+	pending <- UADeviceToken{
+		Active:      false,
+		Alias:       nil,
+		Created:     "",
+		DeviceToken: "",
+	}
 
 	if debug {
-		println("Exiting GetDeviceTokensFromUrbanAirship(tokenChannel chan UADeviceToken)")
+		println("Exiting GetDeviceTokensFromUrbanAirship")
 	}
 }
 
-func PostDeviceTokensToPushWoosh(pending <-chan *UADeviceToken, status chan<- State, done chan struct{}) {
+func PostDeviceTokensToPushWoosh(pending <-chan UADeviceToken, status chan<- State, done chan struct{}) {
 	if debug {
-		println("Entered PostDeviceTokensToPushWoosh(tokenChannel chan UADeviceToken)")
+		println("Entered PostDeviceTokensToPushWoosh")
 	}
 
-	for deviceToken := range pending {
-		if debug {
-			println("Attempting to register device...")
-		}
-
-		if debug {
-			println("Device Token: " + deviceToken.DeviceToken)
-		}
-
-		if deviceToken.DeviceToken == "" && deviceToken.Active == false && deviceToken.Created == "" {
-			close(done)
-		}
-
-		PostDeviceTokenToPushWoosh := func(registerDevice PWRegisterDevice, deviceRegisterResp *PWDeviceRegisterResponse) {
-			jsonBody, _ := json.Marshal(registerDevice)
-			body := strings.NewReader(string(jsonBody))
-			req, _ := http.NewRequest("POST", "https://cp.pushwoosh.com/json/1.3/registerDevice", body)
-			req.Header.Add("Content-type", "application/json")
-			req.Header.Add("Accept", "application/json")
-
-			client := &http.Client{}
-			resp, _ := client.Do(req)
-			respBody, _ := ioutil.ReadAll(resp.Body)
-
-			json.Unmarshal(respBody, &deviceRegisterResp)
-		}
-
-		if deviceToken.Active {
-			registerDevice := PWRegisterDevice{
-				Request: PWRegisterDeviceRequest{
-					Auth:        config.PushWoosh.ApiKey,
-					Application: config.PushWoosh.AppCode,
-					DeviceType:  config.PushWoosh.DefaultDeviceType,
-					Language:    config.PushWoosh.DefaultLanguage,
-					Timezone:    config.PushWoosh.DefaultTimezone,
-					Hwid:        deviceToken.DeviceToken, // UrbanAirship does not store a UDID. Use the token instead.
-					PushToken:   deviceToken.DeviceToken,
-				},
+	for {
+		select {
+		case deviceToken, _ := <-pending:
+			if debug {
+				println("Attempting to register device...")
+				println("Device Token: " + deviceToken.DeviceToken)
 			}
 
-			var deviceRegisterResp PWDeviceRegisterResponse
-			PostDeviceTokenToPushWoosh(registerDevice, &deviceRegisterResp)
-			if deviceRegisterResp.StatusCode != 200 || deviceRegisterResp.StatusMessage != "OK" {
-				r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
-				println("\nFailed to register device with token:")
-				println("\n\t" + registerDevice.Request.PushToken)
-				println("\nResponse from PushWoosh:\n")
-				os.Stdout.Write(r)
+			if deviceToken.DeviceToken == "" && deviceToken.Active == false && deviceToken.Created == "" {
 				close(done)
-			} else {
-				if debug {
-					r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
-					os.Stdout.Write(r)
-					println()
-				}
 			}
-			status <- State{"SENT", deviceToken.DeviceToken}
-		} else {
-			status <- State{"INACTIVE", deviceToken.DeviceToken}
-		}
 
-		if debug {
-			println("Device registration complete.")
+			PostDeviceTokenToPushWoosh := func(registerDevice PWRegisterDevice, deviceRegisterResp *PWDeviceRegisterResponse) {
+				jsonBody, _ := json.Marshal(registerDevice)
+				body := strings.NewReader(string(jsonBody))
+				req, _ := http.NewRequest("POST", "https://cp.pushwoosh.com/json/1.3/registerDevice", body)
+				req.Header.Add("Content-type", "application/json")
+				req.Header.Add("Accept", "application/json")
+
+				client := &http.Client{}
+				resp, _ := client.Do(req)
+				respBody, _ := ioutil.ReadAll(resp.Body)
+
+				json.Unmarshal(respBody, &deviceRegisterResp)
+			}
+
+			if deviceToken.Active {
+				registerDevice := PWRegisterDevice{
+					Request: PWRegisterDeviceRequest{
+						Auth:        config.PushWoosh.ApiKey,
+						Application: config.PushWoosh.AppCode,
+						DeviceType:  config.PushWoosh.DefaultDeviceType,
+						Language:    config.PushWoosh.DefaultLanguage,
+						Timezone:    config.PushWoosh.DefaultTimezone,
+						Hwid:        deviceToken.DeviceToken, // UrbanAirship does not provide UDID. Use the token instead.
+						PushToken:   deviceToken.DeviceToken,
+					},
+				}
+
+				var deviceRegisterResp PWDeviceRegisterResponse
+				PostDeviceTokenToPushWoosh(registerDevice, &deviceRegisterResp)
+				if deviceRegisterResp.StatusCode != 200 || deviceRegisterResp.StatusMessage != "OK" {
+					r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
+					println("\nFailed to register device with token:")
+					println("\n\t" + registerDevice.Request.PushToken)
+					println("\nResponse from PushWoosh:\n")
+					os.Stdout.Write(r)
+					close(done)
+				} else {
+					if debug {
+						r, _ := json.MarshalIndent(deviceRegisterResp, "", "\t")
+						os.Stdout.Write(r)
+						println()
+					}
+				}
+				status <- State{"SENT", deviceToken.DeviceToken}
+			} else {
+				status <- State{"INACTIVE", deviceToken.DeviceToken}
+			}
+
+			if debug {
+				println("Device registration complete.")
+			}
 		}
 	}
 
 	if debug {
-		println("Exiting PostDeviceTokensToPushWoosh(tokenChannel chan UADeviceToken)")
+		println("Exiting PostDeviceTokensToPushWoosh")
 	}
 }
 
-type State struct {
-	Status      string `json:"status"`
-	DeviceToken string `json:"device_token"`
-}
-
-func StateMonitor(updateInterval time.Duration, pending chan *UADeviceToken) chan<- State {
+func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan<- State {
 	updates := make(chan State)
 	tokenStatus := make(map[string][]string)
 	ticker := time.NewTicker(updateInterval)
@@ -268,10 +265,10 @@ func StateMonitor(updateInterval time.Duration, pending chan *UADeviceToken) cha
 			case t := <-updates:
 				tokenStatus[t.Status] = append(tokenStatus[t.Status], t.DeviceToken)
 
-				// file, _ := os.OpenFile(dumpDir+"/pushwoosh.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-				// defer file.Close()
-				// jsonStr, _ := json.MarshalIndent(t, "", "\t")
-				// file.WriteString(string(jsonStr) + ",\n")
+				file, _ := os.OpenFile(dumpDir+"/pushwoosh.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+				defer file.Close()
+				jsonStr, _ := json.MarshalIndent(t, "", "\t")
+				file.WriteString(string(jsonStr) + ",\n")
 			}
 		}
 	}()
@@ -280,15 +277,14 @@ func StateMonitor(updateInterval time.Duration, pending chan *UADeviceToken) cha
 
 func main() {
 	if debug {
-		println("Entered main()")
+		println("Entered main")
 	}
 
 	dumpDir = "./dump/" + strconv.FormatInt(time.Now().Unix(), 10)
 
-	pending := make(chan *UADeviceToken)
-	done := make(chan struct{})
-
+	pending := make(chan UADeviceToken)
 	status := StateMonitor(5*time.Second, pending)
+	done := make(chan struct{})
 
 	go GetDeviceTokensFromUrbanAirship(pending)
 	go PostDeviceTokensToPushWoosh(pending, status, done)
@@ -298,6 +294,6 @@ func main() {
 	println("All done. Bye.")
 
 	if debug {
-		println("Exiting main()")
+		println("Exiting main")
 	}
 }
