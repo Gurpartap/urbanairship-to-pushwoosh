@@ -112,10 +112,6 @@ var tokensCount float64 = 0
 var downloadedTokensCount float64 = 0
 
 func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
-	if debug {
-		fmt.Println("Entered GetDeviceTokensFromUrbanAirship")
-	}
-
 	GetDeviceTokensFromUrbanAirshipWithURL := func(url string, deviceTokenResp *UADeviceTokensResponse) {
 		req, _ := http.NewRequest("GET", url, nil)
 		req.SetBasicAuth(config.UrbanAirship.AppKey, config.UrbanAirship.MasterSecret)
@@ -181,23 +177,14 @@ func GetDeviceTokensFromUrbanAirship(pending chan<- UADeviceToken) {
 		Created:     "",
 		DeviceToken: "",
 	}
-
-	if debug {
-		fmt.Println("Exiting GetDeviceTokensFromUrbanAirship")
-	}
 }
 
 func PostDeviceTokensToPushWoosh(pending <-chan UADeviceToken, status chan<- State, done chan struct{}) {
-	if debug {
-		fmt.Println("Entered PostDeviceTokensToPushWoosh")
-	}
-
 	for {
 		select {
 		case deviceToken, _ := <-pending:
 			if debug {
-				fmt.Println("Attempting to register device...")
-				fmt.Println("Device Token: " + deviceToken.DeviceToken)
+				fmt.Println("Attempting to register device with token: " + deviceToken.DeviceToken)
 			}
 
 			if deviceToken.DeviceToken == "" && deviceToken.Active == false && deviceToken.Created == "" {
@@ -257,10 +244,6 @@ func PostDeviceTokensToPushWoosh(pending <-chan UADeviceToken, status chan<- Sta
 			}
 		}
 	}
-
-	if debug {
-		fmt.Println("Exiting PostDeviceTokensToPushWoosh")
-	}
 }
 
 func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan<- State {
@@ -301,10 +284,6 @@ func StateMonitor(updateInterval time.Duration, pending chan UADeviceToken) chan
 }
 
 func main() {
-	if debug {
-		fmt.Println("Entered main")
-	}
-
 	dumpDir = "./dump/" + strconv.FormatInt(time.Now().Unix(), 10)
 
 	pending := make(chan UADeviceToken)
@@ -317,8 +296,4 @@ func main() {
 	<-done
 
 	fmt.Println("All done. Bye.")
-
-	if debug {
-		fmt.Println("Exiting main")
-	}
 }
